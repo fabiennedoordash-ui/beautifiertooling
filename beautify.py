@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-beautify.py — Download catalog images and enhance them via OpenAI image edit.
+beautify.py — Download catalog images, enhance via OpenAI, upload to imgbb.
 
 Tries gpt-image-1 first, falls back to dall-e-2 if not available.
 Converts all images to PNG before sending (dall-e-2 requires PNG).
+Uploads enhanced images to imgbb and outputs viewable links.
 
 Usage:
     python beautify.py --input urls.txt --output output/
@@ -41,6 +42,7 @@ DEFAULT_PROMPT = (
 
 MAX_RETRIES = 3
 RETRY_DELAY = 5  # seconds
+IMGBB_UPLOAD_URL = "https://api.imgbb.com/1/upload"
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +126,31 @@ def convert_to_png(image_bytes: bytes) -> bytes:
     return buf.getvalue()
 
 
+def upload_to_imgbb(image_bytes: bytes, api_key: str, name: str = None) -> str | None:
+    """Upload image bytes to imgbb and return the viewer URL."""
+    try:
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        payload = {
+            "key": api_key,
+            "image": b64,
+        }
+        if name:
+            payload["name"] = name
+
+        resp = requests.post(IMGBB_UPLOAD_URL, data=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("success"):
+            return data["data"]["url"]
+        else:
+            print(f"  IMGBB upload failed: {data}")
+            return None
+    except Exception as e:
+        print(f"  IMGBB upload error: {e}")
+        return None
+
+
 def detect_model(client: OpenAI, png_bytes: bytes, prompt: str) -> str:
     """
     Try gpt-image-1 first on the edit endpoint.
@@ -158,7 +185,6 @@ def enhance_image(
     """Send PNG image to OpenAI for enhancement. Returns enhanced image bytes."""
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            # Pass as a named tuple so the SDK sends correct mimetype
             result = client.images.edit(
                 model=model,
                 image=("image.png", png_bytes, "image/png"),
@@ -166,7 +192,6 @@ def enhance_image(
                 size="1024x1024",
             )
 
-            # The response contains base64 image data
             enhanced_b64 = result.data[0].b64_json
             return base64.b64decode(enhanced_b64)
 
@@ -220,6 +245,11 @@ def main():
         default=0,
         help="Skip the first N URLs (for resuming interrupted runs)",
     )
+    parser.add_argument(
+        "--skip-upload",
+        action="store_true",
+        help="Skip imgbb upload (just save locally)",
+    )
     args = parser.parse_args()
 
     # Collect URLs
@@ -259,6 +289,12 @@ def main():
             sys.exit(1)
         client = OpenAI(api_key=api_key)
 
+    # Setup imgbb
+    imgbb_key = os.environ.get("IMGBB_API_KEY")
+    if not imgbb_key and not args.skip_upload and not args.dry_run:
+        print("WARNING: IMGBB_API_KEY not set — skipping uploads. Set it or use --skip-upload.")
+        args.skip_upload = True
+
     # Determine model to use
     model = args.model
     model_detected = False
@@ -288,7 +324,7 @@ def main():
             results.append({"url": url, "status": "dry_run", "original": str(orig_path)})
             continue
 
-        # Convert to PNG (required by dall-e-2, also works for gpt-image-1)
+        # Convert to PNG
         try:
             png_bytes = convert_to_png(image_bytes)
             print(f"  Converted to PNG ({len(png_bytes):,} bytes)")
@@ -312,13 +348,27 @@ def main():
             with open(enhanced_path, "wb") as f:
                 f.write(enhanced_bytes)
             print(f"  Enhanced saved: {enhanced_path}")
-            results.append({
+
+            result_entry = {
                 "url": url,
                 "status": "success",
                 "model": model,
                 "original": str(orig_path),
                 "enhanced": str(enhanced_path),
-            })
+            }
+
+            # Upload to imgbb
+            if not args.skip_upload and imgbb_key:
+                img_name = Path(filename).stem + "_enhanced"
+                print(f"  Uploading to imgbb...")
+                ibb_url = upload_to_imgbb(enhanced_bytes, imgbb_key, name=img_name)
+                if ibb_url:
+                    result_entry["imgbb_url"] = ibb_url
+                    print(f"  imgbb link: {ibb_url}")
+                else:
+                    print(f"  imgbb upload failed — image still saved locally")
+
+            results.append(result_entry)
         else:
             print(f"  ENHANCEMENT FAILED after {MAX_RETRIES} attempts")
             results.append({"url": url, "status": "enhancement_failed", "model": model})
@@ -333,16 +383,28 @@ def main():
     print("=" * 60)
     success = sum(1 for r in results if r["status"] == "success")
     failed = sum(1 for r in results if "failed" in r["status"])
+    uploaded = sum(1 for r in results if r.get("imgbb_url"))
     print(f"  Model:     {model}")
     print(f"  Total:     {len(results)}")
     print(f"  Success:   {success}")
+    print(f"  Uploaded:  {uploaded}")
     print(f"  Failed:    {failed}")
+
+    # Print all imgbb links together for easy copy
+    ibb_links = [(r.get("url", ""), r.get("imgbb_url", "")) for r in results if r.get("imgbb_url")]
+    if ibb_links:
+        print("\n" + "=" * 60)
+        print("IMGBB LINKS")
+        print("=" * 60)
+        for original_url, ibb_url in ibb_links:
+            short_name = url_to_filename(original_url)
+            print(f"  {short_name}: {ibb_url}")
 
     # Save results log
     log_path = out_dir / "results.json"
     with open(log_path, "w") as f:
         json.dump(results, f, indent=2)
-    print(f"  Log saved: {log_path}")
+    print(f"\n  Log saved: {log_path}")
 
 
 if __name__ == "__main__":
