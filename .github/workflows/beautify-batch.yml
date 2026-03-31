@@ -4,19 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       input_file:
-        description: 'Path to URL file in repo (e.g. batches/easter_urls.txt)'
+        description: Path to URL file in repo
         required: true
-        default: 'batches/easter_urls.txt'
+        default: batches/easter_urls.txt
         type: string
       prompt:
-        description: 'Custom enhancement prompt (optional)'
+        description: Custom enhancement prompt (optional)
         required: false
-        default: ''
+        default: ""
         type: string
       start_from:
-        description: 'Skip first N URLs (for resuming)'
+        description: Skip first N URLs (for resuming)
         required: false
-        default: '0'
+        default: "0"
         type: string
 
 jobs:
@@ -31,7 +31,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -51,9 +51,8 @@ jobs:
         run: |
           PROMPT_ARG=""
           if [ -n "${{ github.event.inputs.prompt }}" ]; then
-            PROMPT_ARG="--prompt '${{ github.event.inputs.prompt }}'"
+            PROMPT_ARG="--prompt ${{ github.event.inputs.prompt }}"
           fi
-
           python beautify.py \
             --input "${{ github.event.inputs.input_file }}" \
             --output output/ \
@@ -69,33 +68,4 @@ jobs:
 
       - name: Post summary
         if: always()
-        run: |
-          echo "## Batch Beautifier Results" >> $GITHUB_STEP_SUMMARY
-          echo "**Input file:** \`${{ github.event.inputs.input_file }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -f output/results.json ]; then
-            TOTAL=$(python3 -c "import json; d=json.load(open('output/results.json')); print(len(d))")
-            SUCCESS=$(python3 -c "import json; d=json.load(open('output/results.json')); print(sum(1 for r in d if r['status']=='success'))")
-            FAILED=$(python3 -c "import json; d=json.load(open('output/results.json')); print(sum(1 for r in d if 'failed' in r['status']))")
-            UPLOADED=$(python3 -c "import json; d=json.load(open('output/results.json')); print(sum(1 for r in d if r.get('imgbb_url')))")
-            echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
-            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
-            echo "| Total | $TOTAL |" >> $GITHUB_STEP_SUMMARY
-            echo "| Success | $SUCCESS |" >> $GITHUB_STEP_SUMMARY
-            echo "| Uploaded | $UPLOADED |" >> $GITHUB_STEP_SUMMARY
-            echo "| Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-
-            # List imgbb links in summary
-            echo "### imgbb Links" >> $GITHUB_STEP_SUMMARY
-            python3 -c "
-import json
-d = json.load(open('output/results.json'))
-for r in d:
-    if r.get('imgbb_url'):
-        name = r.get('enhanced', '').split('/')[-1]
-        print(f'- [{name}]({r[\"imgbb_url\"]})')
-" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "No results file found." >> $GITHUB_STEP_SUMMARY
-          fi
+        run: python summary.py >> $GITHUB_STEP_SUMMARY
