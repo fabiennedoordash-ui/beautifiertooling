@@ -2,6 +2,8 @@
 """
 beautify.py — Download catalog images and enhance them via OpenAI image edit.
 
+Tries gpt-image-1 first, falls back to dall-e-2 if not available.
+
 Usage:
     python beautify.py --input urls.txt --output output/
     python beautify.py --input urls.csv --output output/ --prompt "custom prompt"
@@ -42,7 +44,6 @@ DEFAULT_PROMPT = (
 
 MAX_RETRIES = 3
 RETRY_DELAY = 5  # seconds
-SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 # ---------------------------------------------------------------------------
@@ -117,17 +118,44 @@ def download_image(url: str) -> bytes | None:
         return None
 
 
+def detect_model(client: OpenAI, sample_image: bytes, prompt: str) -> str:
+    """
+    Try gpt-image-1 first on the edit endpoint.
+    If it fails with 'must be dall-e-2', fall back to dall-e-2.
+    Returns the model string to use for all subsequent calls.
+    """
+    try:
+        print("  Probing gpt-image-1 support on images.edit...")
+        result = client.images.edit(
+            model="gpt-image-1",
+            image=sample_image,
+            prompt=prompt,
+            size="1024x1024",
+        )
+        print("  gpt-image-1 is available — using it for all images.")
+        return "gpt-image-1"
+    except Exception as e:
+        err_str = str(e)
+        if "dall-e-2" in err_str or "invalid_value" in err_str.lower():
+            print(f"  gpt-image-1 not available on edit endpoint, falling back to dall-e-2.")
+            return "dall-e-2"
+        else:
+            # Some other error (rate limit, etc.) — default to dall-e-2 to be safe
+            print(f"  Probe failed ({e}), defaulting to dall-e-2.")
+            return "dall-e-2"
+
+
 def enhance_image(
     client: OpenAI,
     image_bytes: bytes,
     prompt: str,
-    filename: str,
+    model: str,
 ) -> bytes | None:
     """Send image to OpenAI for enhancement. Returns enhanced image bytes."""
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             result = client.images.edit(
-                model="dall-e-2",
+                model=model,
                 image=image_bytes,
                 prompt=prompt,
                 size="1024x1024",
@@ -169,6 +197,12 @@ def main():
         "--prompt", "-p",
         default=DEFAULT_PROMPT,
         help="Custom enhancement prompt",
+    )
+    parser.add_argument(
+        "--model", "-m",
+        default="auto",
+        choices=["auto", "gpt-image-1", "dall-e-2"],
+        help="Model to use: auto (try gpt-image-1, fallback dall-e-2), or force one",
     )
     parser.add_argument(
         "--dry-run",
@@ -221,6 +255,10 @@ def main():
             sys.exit(1)
         client = OpenAI(api_key=api_key)
 
+    # Determine model to use
+    model = args.model
+    model_detected = False
+
     # Process results tracking
     results = []
 
@@ -246,9 +284,20 @@ def main():
             results.append({"url": url, "status": "dry_run", "original": str(orig_path)})
             continue
 
+        # Auto-detect model on first image
+        if model == "auto" and not model_detected:
+            model = detect_model(client, image_bytes, args.prompt)
+            model_detected = True
+
+            # If detection succeeded with gpt-image-1, the first image was
+            # already processed — extract the result
+            if model == "gpt-image-1":
+                # Re-run since detect_model doesn't return image bytes
+                pass  # Fall through to normal enhance below
+
         # Enhance
-        print(f"  Enhancing via OpenAI image edit...")
-        enhanced_bytes = enhance_image(client, image_bytes, args.prompt, filename)
+        print(f"  Enhancing via {model}...")
+        enhanced_bytes = enhance_image(client, image_bytes, args.prompt, model)
 
         if enhanced_bytes:
             # Save as PNG (API returns PNG)
@@ -260,12 +309,13 @@ def main():
             results.append({
                 "url": url,
                 "status": "success",
+                "model": model,
                 "original": str(orig_path),
                 "enhanced": str(enhanced_path),
             })
         else:
             print(f"  ENHANCEMENT FAILED after {MAX_RETRIES} attempts")
-            results.append({"url": url, "status": "enhancement_failed"})
+            results.append({"url": url, "status": "enhancement_failed", "model": model})
 
         # Rate limiting — be gentle
         if idx < len(urls) - 1:
@@ -277,6 +327,7 @@ def main():
     print("=" * 60)
     success = sum(1 for r in results if r["status"] == "success")
     failed = sum(1 for r in results if "failed" in r["status"])
+    print(f"  Model:     {model}")
     print(f"  Total:     {len(results)}")
     print(f"  Success:   {success}")
     print(f"  Failed:    {failed}")
