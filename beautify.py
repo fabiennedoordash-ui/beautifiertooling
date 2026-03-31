@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-beautify.py — Download catalog images and enhance them via gpt-image-1.
+beautify.py — Download catalog images and enhance them via OpenAI image edit.
 
 Usage:
     python beautify.py --input urls.txt --output output/
@@ -69,7 +69,6 @@ def load_urls_from_csv(filepath: str) -> list[str]:
         target_col = None
         for col in url_columns:
             if col in headers:
-                # Find the actual header (case-insensitive match)
                 for h in reader.fieldnames:
                     if h.lower().strip() == col:
                         target_col = h
@@ -79,7 +78,6 @@ def load_urls_from_csv(filepath: str) -> list[str]:
             print(f"ERROR: CSV has no recognized URL column. Found: {reader.fieldnames}")
             sys.exit(1)
 
-        # Re-read
         f.seek(0)
         reader = csv.DictReader(f)
         for row in reader:
@@ -100,13 +98,9 @@ def load_urls(source: str) -> list[str]:
 
 def url_to_filename(url: str) -> str:
     """Generate a short, unique filename from a URL."""
-    # Extract the UUID-like portion from DoorDash CDN URLs
-    # e.g., .../photosV2/6f82680d-60c5-4101-aef3-340cbc48d93d-retina-large.jpg
     parts = url.split("/")
     last = parts[-1] if parts else url
-    # Remove the -retina-large suffix
     name = last.replace("-retina-large", "")
-    # If still too long, hash it
     if len(name) > 60:
         name = hashlib.md5(url.encode()).hexdigest()[:16] + Path(name).suffix
     return name
@@ -129,24 +123,11 @@ def enhance_image(
     prompt: str,
     filename: str,
 ) -> bytes | None:
-    """Send image to gpt-image-1 for enhancement. Returns enhanced image bytes."""
+    """Send image to OpenAI for enhancement. Returns enhanced image bytes."""
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            # Encode to base64 for the API
-            b64 = base64.b64encode(image_bytes).decode("utf-8")
-
-            # Determine media type
-            ext = Path(filename).suffix.lower()
-            media_map = {
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".png": "image/png",
-                ".webp": "image/webp",
-            }
-            media_type = media_map.get(ext, "image/png")
-
             result = client.images.edit(
-                model="gpt-image-1",
+                model="dall-e-2",
                 image=image_bytes,
                 prompt=prompt,
                 size="1024x1024",
@@ -169,7 +150,7 @@ def enhance_image(
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Beautify catalog product images using gpt-image-1"
+        description="Beautify catalog product images using OpenAI image edit"
     )
     parser.add_argument(
         "--input", "-i",
@@ -266,11 +247,11 @@ def main():
             continue
 
         # Enhance
-        print(f"  Enhancing via gpt-image-1...")
+        print(f"  Enhancing via OpenAI image edit...")
         enhanced_bytes = enhance_image(client, image_bytes, args.prompt, filename)
 
         if enhanced_bytes:
-            # Save as PNG (gpt-image-1 returns PNG)
+            # Save as PNG (API returns PNG)
             enhanced_filename = Path(filename).stem + "_enhanced.png"
             enhanced_path = out_dir / enhanced_filename
             with open(enhanced_path, "wb") as f:
