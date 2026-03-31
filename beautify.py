@@ -150,7 +150,6 @@ def enhance_image(
                 image=image_bytes,
                 prompt=prompt,
                 size="1024x1024",
-                quality="high",
             )
 
             # The response contains base64 image data
