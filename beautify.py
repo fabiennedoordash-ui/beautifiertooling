@@ -31,13 +31,14 @@ from openai import OpenAI
 # Config
 # ---------------------------------------------------------------------------
 DEFAULT_PROMPT = (
-    "Enhance this product photo for an e-commerce catalog. "
-    "Place the product on a clean, pure white background. "
-    "Ensure the product is well-lit, centered, and clearly visible. "
-    "Remove any shelf tags, price stickers, store backgrounds, or clutter. "
-    "Maintain the product's original colors and details accurately. "
-    "Do not add any text, logos, or watermarks. "
-    "Do not change the product itself — only improve the presentation."
+    "Remove the background from this product photo and replace it with a plain white background. "
+    "Keep the product EXACTLY as it appears — do not redraw, regenerate, or alter the product in any way. "
+    "ALL text on the packaging must remain IDENTICAL to the original — same words, same spelling, same fonts, same positions. "
+    "Do NOT add, remove, change, or fix any text whatsoever. "
+    "Do NOT add any new text, labels, watermarks, or graphics that are not in the original photo. "
+    "If any text is unclear or partially visible, leave it blurry rather than guessing what it says. "
+    "The only change should be: background removed and replaced with white. "
+    "The product itself must be pixel-accurate to the original."
 )
 
 MAX_RETRIES = 3
