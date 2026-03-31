@@ -3,16 +3,12 @@
 beautify.py — Download catalog images and enhance them via OpenAI image edit.
 
 Tries gpt-image-1 first, falls back to dall-e-2 if not available.
+Converts all images to PNG before sending (dall-e-2 requires PNG).
 
 Usage:
     python beautify.py --input urls.txt --output output/
     python beautify.py --input urls.csv --output output/ --prompt "custom prompt"
     python beautify.py --url "https://img.cdn4dd.com/..." --output output/
-
-Input formats supported:
-    - .txt  → one URL per line
-    - .csv  → expects a column named 'photo_url' or 'community_photo_url' or 'url'
-    - single --url flag
 """
 
 import argparse
@@ -27,6 +23,7 @@ from pathlib import Path
 from io import BytesIO
 
 import requests
+from PIL import Image
 from openai import OpenAI
 
 # ---------------------------------------------------------------------------
@@ -118,17 +115,25 @@ def download_image(url: str) -> bytes | None:
         return None
 
 
-def detect_model(client: OpenAI, sample_image: bytes, prompt: str) -> str:
+def convert_to_png(image_bytes: bytes) -> bytes:
+    """Convert any image format to RGBA PNG bytes (required by dall-e-2 edit)."""
+    img = Image.open(BytesIO(image_bytes))
+    img = img.convert("RGBA")
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def detect_model(client: OpenAI, png_bytes: bytes, prompt: str) -> str:
     """
     Try gpt-image-1 first on the edit endpoint.
     If it fails with 'must be dall-e-2', fall back to dall-e-2.
-    Returns the model string to use for all subsequent calls.
     """
     try:
         print("  Probing gpt-image-1 support on images.edit...")
         result = client.images.edit(
             model="gpt-image-1",
-            image=sample_image,
+            image=("image.png", png_bytes, "image/png"),
             prompt=prompt,
             size="1024x1024",
         )
@@ -140,23 +145,23 @@ def detect_model(client: OpenAI, sample_image: bytes, prompt: str) -> str:
             print(f"  gpt-image-1 not available on edit endpoint, falling back to dall-e-2.")
             return "dall-e-2"
         else:
-            # Some other error (rate limit, etc.) — default to dall-e-2 to be safe
             print(f"  Probe failed ({e}), defaulting to dall-e-2.")
             return "dall-e-2"
 
 
 def enhance_image(
     client: OpenAI,
-    image_bytes: bytes,
+    png_bytes: bytes,
     prompt: str,
     model: str,
 ) -> bytes | None:
-    """Send image to OpenAI for enhancement. Returns enhanced image bytes."""
+    """Send PNG image to OpenAI for enhancement. Returns enhanced image bytes."""
     for attempt in range(1, MAX_RETRIES + 1):
         try:
+            # Pass as a named tuple so the SDK sends correct mimetype
             result = client.images.edit(
                 model=model,
-                image=image_bytes,
+                image=("image.png", png_bytes, "image/png"),
                 prompt=prompt,
                 size="1024x1024",
             )
@@ -242,7 +247,6 @@ def main():
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Track originals too
     originals_dir = out_dir / "originals"
     originals_dir.mkdir(exist_ok=True)
 
@@ -284,23 +288,25 @@ def main():
             results.append({"url": url, "status": "dry_run", "original": str(orig_path)})
             continue
 
+        # Convert to PNG (required by dall-e-2, also works for gpt-image-1)
+        try:
+            png_bytes = convert_to_png(image_bytes)
+            print(f"  Converted to PNG ({len(png_bytes):,} bytes)")
+        except Exception as e:
+            print(f"  PNG CONVERSION FAILED: {e}")
+            results.append({"url": url, "status": "conversion_failed"})
+            continue
+
         # Auto-detect model on first image
         if model == "auto" and not model_detected:
-            model = detect_model(client, image_bytes, args.prompt)
+            model = detect_model(client, png_bytes, args.prompt)
             model_detected = True
-
-            # If detection succeeded with gpt-image-1, the first image was
-            # already processed — extract the result
-            if model == "gpt-image-1":
-                # Re-run since detect_model doesn't return image bytes
-                pass  # Fall through to normal enhance below
 
         # Enhance
         print(f"  Enhancing via {model}...")
-        enhanced_bytes = enhance_image(client, image_bytes, args.prompt, model)
+        enhanced_bytes = enhance_image(client, png_bytes, args.prompt, model)
 
         if enhanced_bytes:
-            # Save as PNG (API returns PNG)
             enhanced_filename = Path(filename).stem + "_enhanced.png"
             enhanced_path = out_dir / enhanced_filename
             with open(enhanced_path, "wb") as f:
@@ -317,7 +323,7 @@ def main():
             print(f"  ENHANCEMENT FAILED after {MAX_RETRIES} attempts")
             results.append({"url": url, "status": "enhancement_failed", "model": model})
 
-        # Rate limiting — be gentle
+        # Rate limiting
         if idx < len(urls) - 1:
             time.sleep(2)
 
